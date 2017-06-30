@@ -206,6 +206,7 @@ func (n *node) write(p *page) {
 		return
 	}
 
+	// b是个slice, 对应存k,v的地方
 	// Loop over each item and write it to the page.
 	b := (*[maxAllocSize]byte)(unsafe.Pointer(&p.ptr))[n.pageElementSize()*len(n.inodes):]
 	for i, item := range n.inodes {

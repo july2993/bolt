@@ -32,7 +32,7 @@ type page struct {
 	flags    uint16
 	count    uint16
 	overflow uint32
-	ptr      uintptr
+	ptr      uintptr //占位方便获取对应地址, 根据不同page type存不同对应数据 前面的几个字段才会在db写对应字段数据
 }
 
 // typ returns a human readable page type string used for debugging.
@@ -53,6 +53,9 @@ func (p *page) typ() string {
 func (p *page) meta() *meta {
 	return (*meta)(unsafe.Pointer(&p.ptr))
 }
+
+// why 0x7FFFFFF
+// 0x7FFFFFF for 0x7FFFFFFF(2g) / sizeof(leafPageElement) ??????
 
 // leafPageElement retrieves the leaf node by index
 func (p *page) leafPageElement(index uint16) *leafPageElement {

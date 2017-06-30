@@ -22,11 +22,13 @@ type txid uint64
 // are using them. A long running read transaction can cause the database to
 // quickly grow.
 type Tx struct {
-	writable       bool
-	managed        bool
-	db             *DB
-	meta           *meta
-	root           Bucket
+	writable bool
+	managed  bool
+	db       *DB   // nil means tx is closed
+	meta     *meta // copy到内存的一份，不是map到文件的
+	root     Bucket
+	// for write dirty page
+	// 这里的page是没map到文件的
 	pages          map[pgid]*page
 	stats          TxStats
 	commitHandlers []func()

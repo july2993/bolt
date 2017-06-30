@@ -9,9 +9,12 @@ import (
 // freelist represents a list of all pages that are available for allocation.
 // It also tracks pages that have been freed but are still in use by open transactions.
 type freelist struct {
+	// ids 保持有序，方便分配一块连续的page
 	ids     []pgid          // all free and available free page ids.
 	pending map[txid][]pgid // mapping of soon-to-be free page ids by tx.
-	cache   map[pgid]bool   // fast lookup of all free and pending page ids.
+	// 磁盘保存什么两个字段，ids包括pending中的，读取会在内存把peding中的去掉，并
+	// 建立cache字段
+	cache map[pgid]bool // fast lookup of all free and pending page ids.
 }
 
 // newFreelist returns an empty, initialized freelist.

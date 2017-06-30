@@ -1,3 +1,5 @@
+// 原LMDB介绍
+// http://www.snia.org/sites/default/files/SDC15_presentations/database/HowardChu_The_Lighting_Memory_Database.pdf
 package bolt
 
 import (
@@ -99,15 +101,22 @@ type DB struct {
 	lockfile *os.File // windows only
 	dataref  []byte   // mmap'ed readonly, write throws SEGV
 	data     *[maxMapSize]byte
-	datasz   int
+	datasz   int // mmap size, datasz <= filesz
 	filesz   int // current on disk file size
+	// 两个meta是为了recover, 正常恢复db
+	// 写一个meta page的时候不是原子，可能中途挂掉，
+	// 这时候重启如何还用这个meta page就有问题，meta page的有checksum
+	// txid 最大的valid meta page 为当前生效meta page
+	// 一个修改tx commit COW 最先写新的freelist, leafPage&branchPage, 最后才写
+	// meta page, meta page 写成功这个tx才提交成功，meta page是整个DB的‘入口'
+	// 后面请求使用新的meta page, 才对这个修改tx可见
 	meta0    *meta
 	meta1    *meta
 	pageSize int
 	opened   bool
-	rwtx     *Tx
-	txs      []*Tx
-	freelist *freelist
+	rwtx     *Tx       // 读写tx  1write 多read-only并发
+	txs      []*Tx     // 全部read-only tx
+	freelist *freelist // 内存freelist, rw tx才可能修改更新
 	stats    Stats
 
 	pagePool sync.Pool
@@ -201,7 +210,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		}
 	} else {
 		// Read the first meta page to determine the page size.
-		var buf [0x1000]byte
+		var buf [0x1000]byte // 4k
 		if _, err := db.file.ReadAt(buf[:], 0); err == nil {
 			m := db.pageInBuffer(buf[:], 0).meta()
 			if err := m.validate(); err != nil {
@@ -240,6 +249,8 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	return db, nil
 }
 
+// mmap 的大小可以比文件的大小大, map完后再扩大文件大小是没问题的
+// 在tx.go里才会调用grow(), 扩大文件大小
 // mmap opens the underlying memory-mapped file and initializes the meta references.
 // minsz is the minimum size that the new mmap can be.
 func (db *DB) mmap(minsz int) error {
@@ -313,6 +324,8 @@ func (db *DB) mmapSize(size int) (int, error) {
 		}
 	}
 
+	// maxMapSize 看机器，386 32位机器保留低位2g给用户空间,64位的会保留48位用户空间寻址, 最大1<<48
+
 	// Verify the requested size is not above the maximum allowed.
 	if size > maxMapSize {
 		return 0, fmt.Errorf("mmap too large")
@@ -339,6 +352,7 @@ func (db *DB) mmapSize(size int) (int, error) {
 	return int(sz), nil
 }
 
+// 初始化4个page, 0,1:meta, 2: freelist 3 empty leaf page
 // init creates a new database file and initializes its meta pages.
 func (db *DB) init() error {
 	// Set the page size to the OS page size.
@@ -469,6 +483,9 @@ func (db *DB) beginTx() (*Tx, error) {
 	// write transaction will obtain them.
 	db.metalock.Lock()
 
+	// remap 的时候原有map的虚拟地址空间都失效,这里相当与如果写tx需要扩大文件remap的时候
+	// 为了拿这写锁需要等待全部read-only tx结束, 没法并发了
+
 	// Obtain a read-only lock on the mmap. When the mmap is remapped it will
 	// obtain a write lock so all transactions must finish before it can be
 	// remapped.
@@ -527,6 +544,9 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	t.init(db)
 	db.rwtx = t
 
+	// 这里估计这样，wr可能可以free掉一些page,但是会有其它read-only tx并发,
+	// 这些tx还会引用到这些page的，所以需要等到之前的read-only tx都结束才可以
+	// 真正回收这些page
 	// Free any pages associated with closed read-only transactions.
 	var minid txid = 0xFFFFFFFFFFFFFFFF
 	for _, t := range db.txs {
@@ -541,6 +561,7 @@ func (db *DB) beginRWTx() (*Tx, error) {
 	return t, nil
 }
 
+// read-only tx 调用
 // removeTx removes a transaction from the database.
 func (db *DB) removeTx(tx *Tx) {
 	// Release the read lock on the mmap.
@@ -842,6 +863,8 @@ func (db *DB) allocate(count int) (*page, error) {
 		return p, nil
 	}
 
+	// freelist 里分配不了就要在末位分配，并且扩大map的块，如果需要的话
+
 	// Resize mmap() if we're at the end.
 	p.id = db.rwtx.meta.pgid
 	var minsz = int((p.id+pgid(count))+1) * db.pageSize
@@ -976,8 +999,10 @@ type meta struct {
 	flags    uint32
 	root     bucket
 	freelist pgid
+	// 当前知道的最大的pg个数, pgid * PGSIZE <= datasz
+	// < pgid 的page要么已经分配，要么在freelist,可以重用
 	pgid     pgid
-	txid     txid
+	txid     txid // txid 递增
 	checksum uint64
 }
 

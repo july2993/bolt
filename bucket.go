@@ -235,7 +235,7 @@ func (b *Bucket) DeleteBucket(key []byte) error {
 	// Recursively delete all child buckets.
 	child := b.Bucket(key)
 	err := child.ForEach(func(k, v []byte) error {
-		if v == nil {
+		if v == nil { // 这是个bucket
 			if err := child.DeleteBucket(k); err != nil {
 				return fmt.Errorf("delete bucket: %s", err)
 			}
@@ -522,6 +522,7 @@ func (b *Bucket) _forEachPageNode(pgid pgid, depth int, fn func(*page, *node, in
 	}
 }
 
+// tx Commit的时候调用
 // spill writes all the nodes for this bucket to dirty pages.
 func (b *Bucket) spill() error {
 	// Spill all child buckets first.
